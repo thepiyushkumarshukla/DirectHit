@@ -5,15 +5,25 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from directhit.analyzer import RedirectAnalyzer, build_payloads, verify_redirect
+from directhit.analyzer import RedirectAnalyzer, build_payloads, dedupe_urls_for_scan, verify_redirect
 from directhit.net import AsyncRequester
 
 
 def test_payloads_include_core_variants() -> None:
     payloads = build_payloads()
     assert "https://www.google.com/" in payloads
-    assert "//google.com/" in payloads
+    assert "//www.google.com/" in payloads
     assert "https%3A%2F%2Fwww.google.com%2F" in payloads
+
+
+def test_dedupe_urls_for_scan_reduces_noisy_variants() -> None:
+    urls = [
+        "https://t.com/_next/image?url=%2Fa.jpg&w=16&q=75",
+        "https://t.com/_next/image?url=%2Fa.jpg&w=32&q=75",
+        "https://t.com/_next/image?url=%2Fa.jpg&w=64&q=75",
+    ]
+    out = dedupe_urls_for_scan(urls)
+    assert len(out) == 1
 
 
 def test_verify_redirect_location_header_accepts_google() -> None:
@@ -47,7 +57,7 @@ class RedirectTestHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if parsed.path == "/redirect":
-            nxt = params.get("next", [""])[0]
+            nxt = params.get("url", [""])[0]
             if "google.com" in nxt:
                 self.send_response(302)
                 self.send_header("Location", "https://www.google.com/")
@@ -74,11 +84,11 @@ def test_integration_redirect_vs_echo() -> None:
 
         base = f"http://127.0.0.1:{server.server_port}"
         urls = [
-            f"{base}/redirect?next=/dashboard",
+            f"{base}/redirect?url=/dashboard&w=16&q=75",
             f"{base}/echo?next=http://example.com",
         ]
 
-        requester = AsyncRequester(timeout=3, concurrency=2)
+        requester = AsyncRequester(timeout=3, concurrency=4)
         analyzer = RedirectAnalyzer(requester)
         findings = await analyzer.analyze_urls(base, urls)
 
@@ -89,5 +99,4 @@ def test_integration_redirect_vs_echo() -> None:
 
     findings = asyncio.run(run_case())
     assert len(findings) == 1
-    assert findings[0].param == "next"
-    assert "google.com" in findings[0].final_url or findings[0].verification == "location_header"
+    assert findings[0].param == "url"

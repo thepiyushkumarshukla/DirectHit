@@ -53,8 +53,8 @@ def print_banner() -> None:
 
 def print_legal_notice() -> None:
     text = (
-        "[bold yellow]Legal Notice:[/bold yellow] You must be authorized to test targets. "
-        "Use [bold]--ethics-confirm I_own_or_have_permission[/bold] to proceed."
+        "[bold yellow]Legal Notice:[/bold yellow] Scan only targets where you have explicit permission. "
+        "DirectHit is for authorized security testing only."
     )
     if Panel:
         console.print(Panel(text, border_style="yellow"))

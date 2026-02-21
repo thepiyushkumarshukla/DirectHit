@@ -1,76 +1,49 @@
 # DirectHit
 
-DirectHit is a production-ready Python CLI for ethically hunting open-redirect vulnerabilities. It chains reconnaissance (`katana | gf redirect`) with async payload testing and strict verification to minimize false positives.
+DirectHit is a Python CLI for hunting open-redirect vulnerabilities with strict verification and faster URL analysis.
 
-## Legal & Ethics
+## Legal Use
 
-DirectHit must only be used against targets you are explicitly authorized to test.
+Use this tool only on targets you are explicitly authorized to test.
 
-You **must** pass:
+## What changed (speed + reliability)
 
-```bash
---ethics-confirm I_own_or_have_permission
-```
-
-Without this flag/value, DirectHit exits immediately.
+- Faster analysis defaults:
+  - default concurrency increased to `20`
+  - default timeout lowered to `8s`
+  - GET-only checks by default (no slow HEAD pass)
+  - dedupe noisy URL variants by endpoint signature (helps `_next/image?...w=...` style lists)
+- Better candidate handling:
+  - identifies likely redirect parameters (`url`, `redirect`, `next`, etc.)
+  - also detects URL-ish parameter values (`http`, `//`, encoded slashes)
+- Strict false-positive reduction:
+  - confirms only if final redirect target is `https://google.com` or `https://www.google.com`
+  - allows strong evidence from `Location`, final URL, or meta-refresh checks
 
 ## Features
 
 - `directhit scan <target>` runs:
-  - `echo '<target>' | katana | gf redirect`
-  - Captures stdout, appends to `promising_redirect_urls`, de-duplicates, then analyzes.
-- `directhit analyze --file promising_redirect_urls` analyzes existing URLs.
-- Async concurrency (`asyncio` + `httpx`) and per-domain rate-limiting.
-- Better terminal rendering:
-  - dark banner style
-  - progress bar while analyzing URLs
-  - summary panel with processed count and confirmed findings
-- False-positive protection:
-  - Confirms only if final URL is `https://google.com` or `https://www.google.com`.
-  - Accepts only verified redirect behaviors (3xx `Location`, final URL resolution, meta-refresh).
-  - Includes deterministic double-check with alternate UA.
-- Human-readable rich table + machine-readable `findings.json`.
-- Audit log written to `directhit.log`.
-- CSV export support.
-
-> Note: no scanner can guarantee 100% coverage of all redirect paths. DirectHit is optimized to reduce false positives and provide high-confidence findings.
+  - `echo '<target>' | katana | gf redirect >> promising_redirect_urls`
+  - then analyzes de-duplicated promising URLs
+- `directhit analyze --file promising_redirect_urls` analyzes an existing list
+- progress bar + findings table + summary panel
+- exports JSON (`findings.json`) and optional CSV
+- writes runtime logs to `directhit.log`
 
 ## Install
 
-### 1) Ensure Go and PATH
-
 ```bash
 export PATH=$PATH:$HOME/go/bin
-```
-
-### 2) Install Katana
-
-```bash
 CGO_ENABLED=1 go install github.com/projectdiscovery/katana/cmd/katana@latest
-```
-
-### 3) Install gf
-
-```bash
 go install github.com/tomnomnom/gf@latest
 cp $(go env GOPATH)/pkg/mod/github.com/tomnomnom/gf@*/examples/* ~/.gf || true
-```
-
-### 4) Install GF redirect patterns
-
-```bash
 git clone https://github.com/1ndianl33t/Gf-Patterns ~/.gf_patterns
 mkdir -p ~/.gf
 cp ~/.gf_patterns/*.json ~/.gf
-```
-
-### 5) Python dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-### Optional one-shot installer
+Or run:
 
 ```bash
 ./install_deps.sh
@@ -79,59 +52,29 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python -m directhit scan https://getmarlee.com/ \
-  --ethics-confirm I_own_or_have_permission \
-  --concurrency 8 \
-  --timeout 10
+python -m directhit scan https://getmarlee.com/ --concurrency 20 --timeout 8
 ```
 
 ```bash
-python -m directhit analyze \
-  --file promising_redirect_urls \
-  --target https://getmarlee.com/ \
-  --ethics-confirm I_own_or_have_permission \
-  --output findings.json
+python -m directhit analyze --file promising_redirect_urls --target https://getmarlee.com/
 ```
 
-```bash
-python -m directhit install-deps
-```
+## Your example (`url=` parameter)
+
+For URLs like:
+
+`https://getmarlee.com/_next/image?url=%2Fpayload-api%2F...&w=16&q=75`
+
+DirectHit automatically treats `url` as a high-priority candidate, injects Google payload variants into that parameter, and verifies whether it truly redirects to HTTPS Google host.
 
 ## Exit codes
 
-- `0`: completed, no confirmed findings.
-- `10`: one or more confirmed vulnerabilities.
-- non-zero Click errors: invalid usage, invalid target URL, missing ethics confirmation.
-
-## Output format (`findings.json`)
-
-```json
-[
-  {
-    "target": "https://getmarlee.com/",
-    "vulnerable_url": "https://target/path?redirect=...",
-    "param": "redirect",
-    "payload": "https://www.google.com/",
-    "verification": "final_url_match",
-    "final_url": "https://www.google.com/",
-    "timestamp": "2026-01-01T00:00:00+00:00",
-    "request_sample": {
-      "method": "GET",
-      "headers": {},
-      "raw_request": "GET https://target/..."
-    }
-  }
-]
-```
+- `0`: completed, no confirmed findings
+- `10`: one or more confirmed vulnerabilities
+- other non-zero: invalid usage/input errors
 
 ## Tests
 
 ```bash
 pytest -q
 ```
-
-## Notes
-
-- DirectHit does **not** perform destructive actions.
-- It does not attempt authenticated workflow chaining.
-- It only performs safe redirect validation requests and logs results for reproducibility.

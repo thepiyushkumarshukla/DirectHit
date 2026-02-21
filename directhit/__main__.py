@@ -18,17 +18,7 @@ except Exception:  # noqa: BLE001
 from .analyzer import RedirectAnalyzer
 from .net import AsyncRequester
 from .runner import load_urls_from_file, run_katana_gf
-from .ui import (
-    build_progress,
-    console,
-    export_csv,
-    print_banner,
-    print_legal_notice,
-    render_findings,
-    render_summary,
-)
-
-ETHICS_VALUE = "I_own_or_have_permission"
+from .ui import build_progress, console, export_csv, print_banner, print_legal_notice, render_findings, render_summary
 
 
 @click.group()
@@ -46,13 +36,6 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-def _ethics_guard(ethics_confirm: str | None) -> None:
-    if ethics_confirm != ETHICS_VALUE:
-        raise click.ClickException(
-            "Ethics confirmation missing/invalid. Pass --ethics-confirm I_own_or_have_permission"
-        )
-
-
 def _validate_url(value: str) -> None:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -67,16 +50,16 @@ def _write_json(path: Path, payload: list[dict]) -> None:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-async def _analyze(
-    target: str,
-    urls: list[str],
-    concurrency: int,
-    timeout: float,
-    user_agent: str | None,
-) -> list[dict]:
+async def _analyze(target: str, urls: list[str], concurrency: int, timeout: float, user_agent: str | None) -> list[dict]:
     requester = AsyncRequester(timeout=timeout, concurrency=concurrency, user_agent=user_agent)
     try:
-        analyzer = RedirectAnalyzer(requester=requester, timeout=timeout, deterministic_check=True)
+        analyzer = RedirectAnalyzer(
+            requester=requester,
+            timeout=timeout,
+            deterministic_check=False,
+            fast_mode=True,
+            methods=("GET",),
+        )
         progress, task_id = build_progress(len(urls))
 
         async def _progress_update(done: int, total: int) -> None:
@@ -96,10 +79,9 @@ async def _analyze(
 
 @cli.command()
 @click.argument("target")
-@click.option("--concurrency", default=10, show_default=True, type=int)
-@click.option("--timeout", default=10.0, show_default=True, type=float)
+@click.option("--concurrency", default=20, show_default=True, type=int)
+@click.option("--timeout", default=8.0, show_default=True, type=float)
 @click.option("--user-agent", default=None)
-@click.option("--ethics-confirm", default=None)
 @click.option("--output", default="findings.json", show_default=True)
 @click.option("--export-csv", default=None)
 @click.option("--output-dir", default=".", show_default=True)
@@ -110,7 +92,6 @@ def scan(
     concurrency: int,
     timeout: float,
     user_agent: str | None,
-    ethics_confirm: str | None,
     output: str,
     export_csv: str | None,
     output_dir: str,
@@ -120,8 +101,8 @@ def scan(
     """Run katana|gf redirect then analyze URLs."""
     _setup_logging(verbose=not quiet)
     _validate_url(target)
-    print_legal_notice()
-    _ethics_guard(ethics_confirm)
+    if not quiet:
+        print_legal_notice()
     if not banner_off and not quiet:
         print_banner()
 
@@ -134,7 +115,6 @@ def scan(
         raise SystemExit(0)
 
     findings = asyncio.run(_analyze(target, urls, concurrency, timeout, user_agent))
-
     _write_json(out_dir / output, findings)
     render_findings([] if not findings else [_dict_to_finding(f) for f in findings])
     render_summary(total_urls=len(urls), findings=len(findings))
@@ -150,10 +130,9 @@ def scan(
 @cli.command()
 @click.option("--file", "file_path", default="promising_redirect_urls", show_default=True)
 @click.option("--target", default="unknown-target")
-@click.option("--concurrency", default=10, show_default=True, type=int)
-@click.option("--timeout", default=10.0, show_default=True, type=float)
+@click.option("--concurrency", default=20, show_default=True, type=int)
+@click.option("--timeout", default=8.0, show_default=True, type=float)
 @click.option("--user-agent", default=None)
-@click.option("--ethics-confirm", default=None)
 @click.option("--output", default="findings.json", show_default=True)
 @click.option("--export-csv", default=None)
 @click.option("--output-dir", default=".", show_default=True)
@@ -165,7 +144,6 @@ def analyze(
     concurrency: int,
     timeout: float,
     user_agent: str | None,
-    ethics_confirm: str | None,
     output: str,
     export_csv: str | None,
     output_dir: str,
@@ -174,8 +152,8 @@ def analyze(
 ) -> None:
     """Analyze an existing file of URLs."""
     _setup_logging(verbose=not quiet)
-    print_legal_notice()
-    _ethics_guard(ethics_confirm)
+    if not quiet:
+        print_legal_notice()
     if target != "unknown-target":
         _validate_url(target)
     if not banner_off and not quiet:

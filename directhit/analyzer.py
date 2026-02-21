@@ -27,7 +27,6 @@ REDIRECT_HINTS = {
 }
 
 LOGGER = logging.getLogger(__name__)
-
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 
 
@@ -63,7 +62,13 @@ def _is_google_https(url: str) -> bool:
 
 def _contains_redirect_signal(value: str) -> bool:
     low = value.lower()
-    return any(token in low for token in ("http", "%2f", "google.com", "//"))
+    return any(token in low for token in ("http", "%2f", "google.com", "//", "www."))
+
+
+def _looks_like_urlish_param(name: str, values: list[str]) -> bool:
+    if name.lower() in REDIRECT_HINTS:
+        return True
+    return any(_contains_redirect_signal(v) for v in values)
 
 
 def extract_candidates(url: str) -> list[Candidate]:
@@ -71,30 +76,46 @@ def extract_candidates(url: str) -> list[Candidate]:
     params = parse_qs(parsed.query, keep_blank_values=True)
     candidates: list[Candidate] = []
     for name, values in params.items():
-        low_name = name.lower()
-        if low_name in REDIRECT_HINTS or any(_contains_redirect_signal(v) for v in values):
+        if _looks_like_urlish_param(name, values):
             candidates.append(Candidate(url=url, param=name))
     return candidates
 
 
-def build_payloads() -> list[str]:
+def dedupe_urls_for_scan(urls: list[str]) -> list[str]:
+    """Reduce duplicate heavy URLs (e.g. image width variants) for faster scans."""
+    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    output: list[str] = []
+    for raw in urls:
+        p = urlparse(raw)
+        params = tuple(sorted(parse_qs(p.query, keep_blank_values=True).keys()))
+        sig = (p.scheme, p.netloc, p.path, params)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        output.append(raw)
+    return output
+
+
+def build_payloads(fast: bool = True) -> list[str]:
     unique = uuid.uuid4().hex[:8]
-    return [
+    core = [
         "https://www.google.com/",
-        "https://www.google.com",
-        "https://google.com",
+        "https://google.com/",
         "//www.google.com/",
-        "//google.com/",
-        "https:%2F%2Fwww.google.com%2F",
         "https%3A%2F%2Fwww.google.com%2F",
+        "https://www.google.com/%2F",
+        f"https://www.google.com/?q=directhit-{unique}&dh_token={uuid.uuid4().hex}",
+    ]
+    if fast:
+        return core
+    return core + [
+        "https:%2F%2Fwww.google.com%2F",
         "https%253A%252F%252Fwww.google.com%252F",
         "/https://www.google.com",
         "/\\/\\/www.google.com",
         "../../https://www.google.com/",
         "#https://www.google.com",
         "http://www.google.com/",
-        "https://www.google.com/%2F",
-        f"https://www.google.com/?q=directhit-{unique}&dh_token={uuid.uuid4().hex}",
     ]
 
 
@@ -112,31 +133,21 @@ def _extract_meta_refresh(body: str) -> str | None:
         body,
         flags=re.IGNORECASE,
     )
-    if match:
-        return match.group(1).strip()
-    return None
+    return match.group(1).strip() if match else None
 
 
 def _extract_js_redirect(body: str) -> str | None:
-    patterns = [
+    for pattern in (
         r"window\.location(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]",
         r"location\.replace\(['\"]([^'\"]+)['\"]\)",
-    ]
-    for pattern in patterns:
+    ):
         match = re.search(pattern, body, flags=re.IGNORECASE)
         if match:
             return match.group(1)
     return None
 
 
-def verify_redirect(
-    base_url: str,
-    initial_status: int,
-    location: str | None,
-    final_url: str,
-    body: str,
-) -> tuple[bool, str]:
-    """Strictly verify only real redirects to HTTPS Google hosts."""
+def verify_redirect(base_url: str, initial_status: int, location: str | None, final_url: str, body: str) -> tuple[bool, str]:
     if _is_google_https(final_url):
         return True, "final_url_match"
 
@@ -162,21 +173,19 @@ class RedirectAnalyzer:
     def __init__(
         self,
         requester: AsyncRequester,
-        timeout: float = 10.0,
-        methods: Iterable[str] = ("GET", "HEAD"),
-        deterministic_check: bool = True,
+        timeout: float = 8.0,
+        methods: Iterable[str] = ("GET",),
+        deterministic_check: bool = False,
+        fast_mode: bool = True,
     ) -> None:
         self.requester = requester
         self.timeout = timeout
         self.methods = tuple(methods)
         self.deterministic_check = deterministic_check
+        self.fast_mode = fast_mode
 
-    async def analyze_urls(
-        self,
-        target: str,
-        urls: list[str],
-        progress_callback: ProgressCallback | None = None,
-    ) -> list[Finding]:
+    async def analyze_urls(self, target: str, urls: list[str], progress_callback: ProgressCallback | None = None) -> list[Finding]:
+        urls = dedupe_urls_for_scan(urls)
         findings: list[Finding] = []
         tasks = [asyncio.create_task(self._analyze_single(target, url)) for url in urls]
         total = len(tasks)
@@ -185,9 +194,9 @@ class RedirectAnalyzer:
             result = await task
             completed += 1
             if progress_callback:
-                maybe_awaitable = progress_callback(completed, total)
-                if asyncio.iscoroutine(maybe_awaitable):
-                    await maybe_awaitable
+                ret = progress_callback(completed, total)
+                if asyncio.iscoroutine(ret):
+                    await ret
             if result:
                 findings.append(result)
         return findings
@@ -198,14 +207,12 @@ class RedirectAnalyzer:
             return None
 
         for candidate in candidates:
-            for payload in build_payloads():
+            for payload in build_payloads(fast=self.fast_mode):
                 injected = inject_payload(candidate.url, candidate.param, payload)
                 for method in self.methods:
                     headers = {
                         "Referer": target,
                         "X-Forwarded-Host": "www.google.com",
-                        "X-Original-URL": injected,
-                        "X-Rewrite-URL": injected,
                     }
                     try:
                         bundle = await self.requester.fetch(injected, method=method, headers=headers)
@@ -220,10 +227,8 @@ class RedirectAnalyzer:
                         final_url=str(bundle.final_response.url),
                         body=bundle.final_response.text,
                     )
-                    if ok and self.deterministic_check:
-                        stable = await self._double_check(injected, method=method)
-                        if not stable:
-                            continue
+                    if ok and self.deterministic_check and not await self._double_check(injected, method):
+                        continue
 
                     if ok:
                         return Finding(
@@ -243,7 +248,6 @@ class RedirectAnalyzer:
         return None
 
     async def _double_check(self, url: str, method: str) -> bool:
-        """Second-pass confirmation with alternate UA to reduce flaky positives."""
         try:
             bundle = await self.requester.fetch(
                 url,
