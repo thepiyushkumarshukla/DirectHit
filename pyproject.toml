@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "directhit"
+version = "0.1.0"
+description = "Ethical open-redirect hunting CLI"
+requires-python = ">=3.10"
+dependencies = [
+  "click",
+  "httpx[http2]",
+  "aiofiles",
+  "rich",
+  "pyfiglet",
+  "anyio",
+  "tqdm",
+  "ujson",
+]
+
+[project.scripts]
+directhit = "directhit.__main__:cli"

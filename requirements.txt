@@ -1,0 +1,10 @@
+click
+httpx[http2]
+aiofiles
+rich
+pyfiglet
+anyio
+pytest
+pytest-asyncio
+tqdm
+ujson
